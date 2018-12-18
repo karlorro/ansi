@@ -1,0 +1,46 @@
+---
+- hosts: ruuter1
+  gather_facts: no
+  become: yes
+
+  vars:
+    key: "{{ lookup('file', '/home/ansi/.ssh/id_rsa.pub') }}"
+  vars_prompt:
+   - name: "user_password" 
+     prompt: "sisesta parool"
+     encrypt: "md5_crypt"
+     confirm: yes
+     salt_size: 7
+
+  tasks:
+   - name: masinate ettevalmistamine ansiblega suhtlemiseks
+     raw: sudo apt update && sudo apt -y install python 
+
+   - name: klientides grupi aktiveerimine
+     group:
+       name: wheel
+       state: present
+
+   - name: haldava kasutaja loomine
+     user:
+       name: ansi
+       password: "{{ user_password }}"
+       groups: wheel
+       append: yes
+       create_home: yes         
+       shell: /bin/bash
+
+   - name: lubame haldava kasutaja grupil peale sisselogimist ilma paroolita toimida
+     lineinfile:
+       dest: /etc/sudoers
+       state: present
+       regexp: '#%wheel'
+       line: '%wheel ALL=(ALL) NOPASSWD: ALL'
+       validate: 'visudo -cf %s'
+
+   - name: kopeerime haldava kasutaja jaoks ssh võtme
+     authorized_key: 
+       user: ansi
+       key: "{{ key }}"
+       state: present
+      
