@@ -1,0 +1,128 @@
+---
+- hosts: ruuter1
+  become: true
+  tasks:
+
+     - name: pakettide paigaldamine
+       apt: name={{ item }} state=latest
+       with_items:
+          - isc-dhcp-server
+          - ifupdown
+          - apache2
+          - tftpd-hpa
+          - inetutils-inetd
+
+     - name: konfiguratsioonifailide muutmine
+       lineinfile:
+         dest: "{{ item.dest }}"
+         regexp: "{{ item.regexp }}"
+         line: "{{ item.line }}"
+         backrefs: yes
+       with_items:
+         - {dest: '/etc/default/isc-dhcp-server', regexp: 'INTERFACESv4=""', line: 'INTERFACESv4="enp0s3"'}
+         - {dest: '/etc/sysctl.conf', regexp: '#(net.ipv4.ip_forward=1)', line: '\1'}
+
+     - name: PXE jaoks konfiguratsiooni täendamine
+       lineinfile:
+         dest: "{{ item.dest }}"
+         line: "{{ item.line }}"
+       with_items:
+         - {dest: '/etc/default/tftpd-hpa', line: 'RUN_DAEMON="yes"'}
+         - {dest: '/etc/default/tftpd-hpa', line: 'OPTIONS="-l -s /var/lib/tftpboot"'}
+         - {dest: '/etc/inetd.conf', line: 'tftp dgram udp wait root /usr/sbin/in.tftpd /usr/sbin/in.tftpd -s /var/lib/tftpboot'}
+
+     - name: DHCP konfiguratsiooni täiendamine
+       blockinfile:
+         dest: /etc/dhcp/dhcpd.conf
+         block: |
+           subnet 192.168.8.0  netmask 255.255.255.0 {
+           option subnet-mask 255.255.255.0;
+           option broadcast-address 192.168.8.255;
+           option domain-name-servers 8.8.8.8;
+           option routers 192.168.8.1;
+           range 192.168.8.20 192.168.8.100;
+           }
+           allow booting;
+           allow bootp;
+           option option-128 code 128 = string;
+           option option-129 code 129 = text;
+           next-server 192.168.7.10;
+           filename "pxelinux.0";       
+
+     - name: võrgukaartide parameetrite määramine
+       blockinfile:
+         dest: /etc/network/interfaces
+         block: |
+           auto enp0s3
+           iface enp0s3 inet static
+           address 192.168.7.10
+           netmask 255.255.255.0
+           gateway 192.168.7.255
+           dns-nameserver 8.8.8.8
+           
+           auto enp0s8
+           iface enp0s8 inet static
+           address 192.168.8.1
+           netmask 255.255.255.0
+
+     - name: teise võrgukaardi aktriveerimine
+       command: ifup enp0s8
+
+     - name: Ubuntu iso allalaadimine
+       get_url:
+         url: http://cdimage.ubuntu.com/releases/18.04.1/release/ubuntu-18.04.1-server-amd64.iso
+         dest: /etc/ubuntu-18.04.1-server-amd64.iso
+
+     - name: Ubuntu iso mountimine
+       mount: 
+         path: /mnt/
+         src: /etc/ubuntu-18.04.1-server-amd64.iso
+         fstype: iso9660
+         state: mounted
+         boot: yes
+
+     - name: Ubuntu PXE jaoks kausta loomine
+       file:
+         path: /var/www/html/ubuntu
+         state: directory
+
+     - name: failide kopeerimine PXE jaoks 
+       shell: cp -fr /mnt/install/netboot/* /var/lib/tftpboot/ && cp -fr /mnt/* /var/www/html/ubuntu/        
+
+     - name: PXE konfiguratsiooni muutmine
+       blockinfile:
+         dest: /var/lib/tftpboot/pxelinux.cfg/default
+         block: |
+           label linux
+           kernel ubuntu-installer/amd64/linux
+           append ks=http://192.168.7.10/ks.cfg vga=normal initrd=ubuntu-installer/amd64/initrd.gz ramdisk_size=16432 root=/dev/rd/0 rw  --
+
+     - name: iptables maskeraadi reegel    
+       iptables:
+         table: nat
+         chain: POSTROUTING
+         out_interface: enp0s3
+         jump: MASQUERADE
+
+     - name: iptables suunamise reegel.1
+       iptables:
+         chain: FORWARD
+         in_interface: enp0s3
+         out_interface: enp0s8
+         match: conntrack
+         ctstate: RELATED,ESTABLISHED
+         jump: ACCEPT
+
+     - name: iptables suunamise reegel.2
+       iptables:
+         chain: FORWARD
+         in_interface: enp0s8
+         out_interface: enp0s3
+         jump: ACCEPT
+
+     - name: iptables reeglite salvestamine
+       apt: name=iptables-persistent state=latest
+
+     - name: masina taaskäivitamine
+       reboot: 
+         reboot_timeout: 30
